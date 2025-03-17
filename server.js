@@ -4,39 +4,25 @@ const axios = require("axios");
 const cors = require("cors");
 const { GoogleSpreadsheet } = require("google-spreadsheet");
 
-// Load environment variables
-const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
-const GOOGLE_SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID;
-
-// Load Google credentials directly from the JSON file in the root folder
-const SERVICE_ACCOUNT_CREDENTIALS = require("./gsConfig.json");
-
 const app = express();
-app.use(cors());
+app.use(cors(["*"]));
+app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
 
-console.log("Using API Key:", GOOGLE_MAPS_API_KEY);
-console.log("Server running on port", PORT);
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+const GOOGLE_SPREADSHEET_ID = process.env.GOOGLE_SHEETS_ID;
+const GS_KEY = process.env.GS_KEY;
+// const SERVICE_ACCOUNT_CREDENTIALS = require("./gsConfig.json");
+const top100Cities = require("./cities.json");
 
-const gsBaseURL = "https://sheets.googleapis.com"
+async function initializeGoogleSheets() { 
+    const doc = new GoogleSpreadsheet(GOOGLE_SPREADSHEET_ID, {apiKey: GS_KEY});
+    await doc.loadInfo();
+    console.log(`Loaded spreadsheet: ${doc.title}`);
+    return doc;
+}
 
-// **Top 100 US Cities (shortened for example)**
-const top100Cities = [
-    { name: "New York, NY", lat: 40.7128, lng: -74.0060 },
-    { name: "Los Angeles, CA", lat: 34.0522, lng: -118.2437 },
-    { name: "Chicago, IL", lat: 41.8781, lng: -87.6298 },
-    { name: "Houston, TX", lat: 29.7604, lng: -95.3698 },
-    { name: "Phoenix, AZ", lat: 33.4484, lng: -112.0740 },
-    { name: "Philadelphia, PA", lat: 39.9526, lng: -75.1652 }
-];
-
-// **Test Route**
-app.get("/", (req, res) => {
-    res.json({ message: "Server is running!" });
-});
-
-// **Function to Get Phone Number**
 async function getPlaceDetails(placeId) {
     const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=formatted_phone_number&key=${GOOGLE_MAPS_API_KEY}`;
 
@@ -49,8 +35,7 @@ async function getPlaceDetails(placeId) {
     }
 }
 
-// **Google Maps API - Fetch Window Cleaners for Top 100 Cities**
-app.get("/api/window-cleaners", async (req, res) => {
+app.get("/window-cleaners", async (req, res) => {
     try {
         const radius = 50000;
         const keyword = "window cleaning";
@@ -61,11 +46,23 @@ app.get("/api/window-cleaners", async (req, res) => {
 
             console.log(`Fetching data for ${city.name}`);
             const response = await axios.get(apiUrl);
+            if(!response.ok){
+                console.log(response)
+                break
+            }
             const businesses = response.data.results;
+            if(businesses){
+                console.log("Success")
+            }
 
             for (const business of businesses) {
                 let phoneNumber = await getPlaceDetails(business.place_id);
-
+                console.log({
+                    city: city.name,
+                    name: business.name,
+                    address: business.vicinity,
+                    phone: phoneNumber
+                })
                 allResults.push({
                     city: city.name,
                     name: business.name,
@@ -76,25 +73,17 @@ app.get("/api/window-cleaners", async (req, res) => {
             }
         }
 
-        res.json(allResults);
+        res.status(200).json(allResults);
     } catch (error) {
         console.error("Error fetching data:", error.message);
         res.status(500).json({ error: "Failed to fetch window cleaning businesses" });
     }
 });
 
-// **Google Sheets - Store Data**
-app.get("/api/save-data", async (req, res) => {
+app.get("/save-data", async (req, res) => {
     try {
-        const doc = new GoogleSpreadsheet(GOOGLE_SPREADSHEET_ID);
+        const doc = initializeGoogleSheets()
 
-        // Authenticate using the service account JSON key
-        await doc.useServiceAccountAuth({
-            client_email: SERVICE_ACCOUNT_CREDENTIALS.client_email,
-            private_key: SERVICE_ACCOUNT_CREDENTIALS.private_key.replace(/\\n/g, '\n'),
-        });
-
-        await doc.loadInfo();
         const sheet = doc.sheetsByIndex[0];
 
         for (const city of top100Cities) {
@@ -124,23 +113,27 @@ app.get("/api/save-data", async (req, res) => {
     }
 });
 
-app.get("/sheetById/:id", async (req, res) => {
+app.get("/get-sheet-data", async (req, res) => {
     try {
-        const sheetId = req.params.id;
-        const response = await axios.get(`${gsBaseURL}/v4/spreadsheets/${sheetId}`, {
-            headers: {
-                "Content-Type": "application/json"
-            }
-        });
+        const doc = await initializeGoogleSheets();
+        const sheet = doc.sheetsByIndex[0];
 
-        res.status(200).json({ message: "LFG", data: response.data });
+        const rows = await sheet.getRows();
+        const data = rows.map((row) => ({
+            Name: row._rawData[0],
+            Location: row._rawData[1],
+            Address: row._rawData[2],
+            Rating: row._rawData[3],
+            Phone: row._rawData[4],
+        }));
+
+        res.json({ message: "✅ Data fetched successfully", data });
     } catch (error) {
-        console.error("Error fetching spreadsheet:", error.message);
-        res.status(400).json({ message: "My bad g it just ain't it today", error: error.message });
+        console.error("Error fetching Google Sheets data:", error.message);
+        res.status(500).json({ error: "Failed to fetch Google Sheets data" });
     }
 });
 
-// Start Server
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Server running on port: ${PORT}`);
 });
